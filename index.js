@@ -2,12 +2,31 @@ const express = require('express');
 const app = express();
 const cors = require('cors');
 const pool = require('./db');
+const bcrypt = require('bcrypt');
+const session = require('express-session');
+const flash = require('express-flash');
+const passport = require('passport');
 
 //middleware
 app.use(cors());
 app.use(express.json()); // req.body
 
+const initializePassport = require('./passport-config');
+initializePassport(passport);
+
 const PORT = process.env.PORT || 8001;
+
+app.use(
+	session({
+		secret: 'secret',
+		resave: false,
+		saveUninitialized: false,
+	})
+);
+app.use(passport.initialize());
+app.use(passport.session());
+
+app.use(flash());
 
 // Routes
 
@@ -89,9 +108,21 @@ app.delete('/todos/:id', async (req, res) => {
 app.post('/users/register', async (req, res) => {
 	try {
 		const { firstname, lastname, email, password } = req.body;
+		let hashedPassword = await bcrypt.hash(password, 10);
 		const registerUser = await pool.query(
-			'INSERT INTO users (firstname, lastname, email, password) VALUES ($1, $2, $3, $4)',
-			[firstname, lastname, email, password]
+			'INSERT INTO users (firstname, lastname, email, password) VALUES ($1, $2, $3, $4) RETURNING id, password',
+			[firstname, lastname, email, hashedPassword],
+			(err, results) => {
+				if (err) {
+					throw err;
+				}
+				console.log(results.rows);
+				req.flash(
+					'success_msg',
+					'Now you are registerd. Please log in'
+				);
+				// res.redirect('/users/login');
+			}
 		);
 		res.json(registerUser);
 	} catch (error) {
@@ -99,11 +130,61 @@ app.post('/users/register', async (req, res) => {
 	}
 });
 
-// user login
+app.post(
+	'/users/login',
+	passport.authenticate('local', {
+		successRedirect: '/users/dashboard',
+		failureRedirect: '/users/login',
+		failureFlash: true,
+	})
+);
 
-app.get('/users/login', async (req, res) => {
-	req.render('login');
+app.get('users/logout', (req, res) => {
+	req.logOut();
+	req.flash('success_msg', 'You have logged out');
+	res.redirect('users/login');
 });
+
+app.get('/', (req, res) => {
+	res.send('index');
+});
+
+app.get('/users/register', checkAuthenticated, (req, res) => {
+	res.send('register');
+});
+
+app.get('/users/login', checkAuthenticated, (req, res) => {
+	console.log(req.session.flash.error);
+	res.send('login');
+});
+
+app.get('/users/dashboard', checkNotAuthenticated, (req, res) => {
+	console.log(req.isAuthenticated());
+	res.send('dashboard', { user: req.user.name });
+});
+
+app.get('/alluser', async (req, res) => {
+	try {
+		const alluser = await pool.query('SELECT * FROM users');
+		res.json(alluser.rows);
+	} catch (error) {
+		console.error(error.message);
+	}
+});
+
+const checkAuthenticated = (req, res, next) => {
+	if (req.isAuthenticated()) {
+		return res.redirect('/users/dashboard');
+	}
+	next();
+};
+
+const checkNotAuthenticated = (req, res, next) => {
+	if ((req, isAuthenticated())) {
+		return next();
+	}
+	res.redirect('users/login');
+};
 
 app.listen(PORT, () => {
 	console.log(`server has started on port ${PORT}`);
